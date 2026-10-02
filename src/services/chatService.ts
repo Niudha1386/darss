@@ -11,6 +11,7 @@ import {
   WSServerMessage,
   ReplyToInfo,
 } from '../types';
+import { API_BASE_URL, getWebSocketUrl } from './apiConfig';
 
 type MessageHandler = (message: ChatMessage) => void;
 type PresenceHandler = (members: RoomMember[]) => void;
@@ -115,7 +116,7 @@ class ChatService {
 
     try {
       if (isInitial) {
-        const joinRes = await fetch(`/api/rooms/${this.currentRoomId}/join`, {
+        const joinRes = await fetch(`${API_BASE_URL}/api/rooms/${this.currentRoomId}/join`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ user: this.currentUser }),
@@ -131,7 +132,7 @@ class ChatService {
         }
       }
 
-      const res = await fetch(`/api/rooms/${this.currentRoomId}/sync-state`);
+      const res = await fetch(`${API_BASE_URL}/api/rooms/${this.currentRoomId}/sync-state`);
       if (res.ok) {
         const data = await res.json();
         if (isInitial) {
@@ -414,7 +415,7 @@ class ChatService {
     }
 
     if (!sentViaWs && this.currentRoomId) {
-      fetch(`/api/rooms/${this.currentRoomId}/messages`, {
+      fetch(`${API_BASE_URL}/api/rooms/${this.currentRoomId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...msgPayload, mode }),
@@ -445,7 +446,7 @@ class ChatService {
     const user = this.currentUser;
 
     try {
-      const res = await fetch('/api/ai/chat', {
+      const res = await fetch(`${API_BASE_URL}/api/ai/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -497,7 +498,7 @@ class ChatService {
     const user = this.currentUser;
 
     try {
-      const res = await fetch('/api/ai/vision', {
+      const res = await fetch(`${API_BASE_URL}/api/ai/vision`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -538,7 +539,7 @@ class ChatService {
    */
   public async checkAIStatus(): Promise<boolean> {
     try {
-      const res = await fetch('/api/ai/status');
+      const res = await fetch(`${API_BASE_URL}/api/ai/status`);
       if (res.ok) {
         const data = await res.json();
         return Boolean(data.available);
@@ -558,7 +559,7 @@ class ChatService {
     if (!this.currentRoomId || !this.currentUser) return null;
 
     try {
-      const res = await fetch(`/api/rooms/${this.currentRoomId}/pamphlets`, {
+      const res = await fetch(`${API_BASE_URL}/api/rooms/${this.currentRoomId}/pamphlets`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -680,7 +681,7 @@ class ChatService {
           formData.append('uploadId', uploadId);
           formData.append('chunkIndex', String(chunkIndex));
 
-          xhr.open('POST', `/api/rooms/${roomId}/pamphlets/upload-chunk`);
+          xhr.open('POST', `${API_BASE_URL}/api/rooms/${roomId}/pamphlets/upload-chunk`);
           xhr.send(formData);
         };
 
@@ -741,7 +742,7 @@ class ChatService {
           });
         }
 
-        const assembleRes = await fetch(`/api/rooms/${roomId}/pamphlets/assemble`, {
+        const assembleRes = await fetch(`${API_BASE_URL}/api/rooms/${roomId}/pamphlets/assemble`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

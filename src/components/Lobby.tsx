@@ -49,8 +49,8 @@ export const Lobby: React.FC = () => {
           }))
         );
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error('Error fetching rooms:', err);
     } finally {
       setIsLoadingRooms(false);
     }

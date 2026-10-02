@@ -1,3 +1,4 @@
+import './pdfPolyfill';
 import fs from 'fs';
 import path from 'path';
 import mammoth from 'mammoth';
