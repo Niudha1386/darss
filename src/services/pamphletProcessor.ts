@@ -1,8 +1,7 @@
-import './pdfPolyfill';
 import fs from 'fs';
 import path from 'path';
 import mammoth from 'mammoth';
-import { PDFParse } from 'pdf-parse';
+import PDFParser from 'pdf2json';
 import { GoogleGenAI } from '@google/genai';
 import type { PamphletChunk, PamphletFile } from '../types';
 
@@ -278,6 +277,72 @@ export function deleteChunksForFile(roomId: string, fileId: string): void {
   }
 }
 
+interface ExtractedPdfPage {
+  num: number;
+  text: string;
+}
+
+function safeDecodeURIComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+/**
+ * Extract per-page text from a PDF buffer using pdf2json (pure JS, no DOM dependencies).
+ */
+function extractPdfPages(buffer: Buffer): Promise<ExtractedPdfPage[]> {
+  return new Promise((resolve, reject) => {
+    const parser = new PDFParser();
+
+    parser.on('pdfParser_dataError', (errData: unknown) => {
+      const parserError = (errData as { parserError?: unknown } | undefined)?.parserError ?? errData;
+      reject(parserError instanceof Error ? parserError : new Error(String(parserError)));
+    });
+
+    parser.on('pdfParser_dataReady', (pdfData: unknown) => {
+      try {
+        const rawPages = ((pdfData as { Pages?: unknown[] } | undefined)?.Pages || []) as Array<{
+          Texts?: Array<{ y: number; x: number; R?: Array<{ T?: string }> }>;
+        }>;
+
+        const result: ExtractedPdfPage[] = rawPages.map((page, idx) => {
+          const lines = new Map<number, Array<{ x: number; text: string }>>();
+          for (const t of page.Texts || []) {
+            const text = (t.R || []).map((r) => safeDecodeURIComponent(r.T || '')).join('');
+            if (!text) continue;
+            const lineKey = Math.round(t.y * 2) / 2;
+            if (!lines.has(lineKey)) lines.set(lineKey, []);
+            lines.get(lineKey)!.push({ x: t.x, text });
+          }
+          const pageText = Array.from(lines.entries())
+            .sort((a, b) => a[0] - b[0])
+            .map(([, items]) =>
+              items
+                .sort((a, b) => a.x - b.x)
+                .map((i) => i.text)
+                .join(' ')
+            )
+            .join('\n');
+          return { num: idx + 1, text: pageText };
+        });
+
+        resolve(result);
+      } catch (err) {
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
+    });
+
+    try {
+      parser.parseBuffer(buffer);
+    } catch (err) {
+      reject(err instanceof Error ? err : new Error(String(err)));
+    }
+  });
+}
+
 /**
  * Main Processor Class for Multi-page Documents (PDF, DOCX, TXT)
  */
@@ -410,8 +475,8 @@ export class PamphletProcessor {
   }
 
   /**
-   * PDF processor using cross-platform pure TypeScript/Node PDFParse
-   * Runs natively in Node.js / Railway without browser DOM or worker threads.
+   * PDF processor using pdf2json, a pure JavaScript parser.
+   * Runs natively in Node.js / Railway without browser DOM APIs or native bindings.
    */
   private async processPdf(
     job: ProcessingJob,
@@ -425,11 +490,8 @@ export class PamphletProcessor {
         throw new Error('FILE_EMPTY: PDF file is zero bytes');
       }
 
-      const parser = new PDFParse(uint8Array);
-      const parsed = await parser.getText();
-
-      const pages = parsed.pages || [];
-      const totalPages = parsed.total || pages.length || 1;
+      const pages = await extractPdfPages(Buffer.from(uint8Array));
+      const totalPages = pages.length || 1;
       job.totalPages = totalPages;
 
       const chunks: PamphletChunk[] = [];
