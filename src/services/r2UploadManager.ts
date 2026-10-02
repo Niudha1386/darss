@@ -58,9 +58,9 @@ interface StoredUploadSession {
 export class R2UploadManager {
   private activeXhrs: Set<XMLHttpRequest> = new Set();
   private isAborted: boolean = false;
-  private currentConcurrency: number = 5;
-  private minConcurrency: number = 2;
-  private maxConcurrency: number = 8;
+  private currentConcurrency: number = 3; // Start conservative for high reliability
+  private minConcurrency: number = 1;
+  private maxConcurrency: number = 6;
 
   private uploadStartTime: number = 0;
   private lastProgressTime: number = 0;
@@ -79,15 +79,19 @@ export class R2UploadManager {
   /**
    * Calculates optimal Part Size for S3 / Cloudflare R2:
    * S3 minimum part size is 5MB (except last part).
+   * Smaller parts (5-8MB) are far more reliable on mobile/variable networks.
    */
   public static calculateOptimalPartSize(fileSize: number): number {
-    if (fileSize < 20 * 1024 * 1024) {
+    if (fileSize < 60 * 1024 * 1024) {
+      return 5 * 1024 * 1024; // 5MB (S3 standard minimum, fast completion)
+    }
+    if (fileSize < 250 * 1024 * 1024) {
       return 8 * 1024 * 1024; // 8MB
     }
-    if (fileSize < 500 * 1024 * 1024) {
-      return 16 * 1024 * 1024; // 16MB default optimal
+    if (fileSize < 600 * 1024 * 1024) {
+      return 16 * 1024 * 1024; // 16MB
     }
-    return 32 * 1024 * 1024; // 32MB for very large files (>500MB)
+    return 32 * 1024 * 1024; // 32MB for very large files (>600MB)
   }
 
   private getSessionStorageKey(roomId: string, file: File): string {
@@ -340,7 +344,7 @@ export class R2UploadManager {
   ): Promise<string> {
     return new Promise((resolve, reject) => {
       let attempts = 0;
-      const maxAttempts = 4;
+      const maxAttempts = 5;
 
       const executeAttempt = () => {
         if (this.isAborted) {
@@ -350,7 +354,29 @@ export class R2UploadManager {
         const xhr = new XMLHttpRequest();
         this.activeXhrs.add(xhr);
 
+        // Activity watchdog: only timeouts if completely frozen for 50 seconds without any byte progress
+        let activityTimer: any = null;
+        const resetWatchdog = () => {
+          if (activityTimer) clearTimeout(activityTimer);
+          activityTimer = setTimeout(() => {
+            try {
+              xhr.abort();
+            } catch {}
+            handleRetry(new Error(`عدم تبادل اطلاعات در بخش ${partNumber} به مدت ۵۰ ثانیه`));
+          }, 50000);
+        };
+        resetWatchdog();
+
+        const cleanupTimers = () => {
+          if (activityTimer) {
+            clearTimeout(activityTimer);
+            activityTimer = null;
+          }
+          this.activeXhrs.delete(xhr);
+        };
+
         xhr.upload.onprogress = (e) => {
+          resetWatchdog(); // Data is actively transferring, prolong timeout!
           if (e.lengthComputable) {
             this.activePartBytes.set(partNumber, e.loaded);
             this.calculateSpeed(totalFileSize);
@@ -359,7 +385,7 @@ export class R2UploadManager {
         };
 
         xhr.onload = () => {
-          this.activeXhrs.delete(xhr);
+          cleanupTimers();
           if (xhr.status >= 200 && xhr.status < 300) {
             // Retrieve ETag returned by Cloudflare R2
             let etag = xhr.getResponseHeader('ETag') || xhr.getResponseHeader('etag') || '';
@@ -379,22 +405,23 @@ export class R2UploadManager {
         };
 
         xhr.onerror = () => {
-          this.activeXhrs.delete(xhr);
+          cleanupTimers();
           handleRetry(new Error(`قطع ارتباط شبکه در بخش ${partNumber}`));
         };
 
         xhr.ontimeout = () => {
-          this.activeXhrs.delete(xhr);
+          cleanupTimers();
           handleRetry(new Error(`پایان زمان انتظار در بخش ${partNumber}`));
         };
 
         const handleRetry = (err: Error) => {
+          cleanupTimers();
           attempts++;
           this.activePartBytes.delete(partNumber);
           if (attempts < maxAttempts && !this.isAborted) {
-            const delay = Math.min(1000 * Math.pow(2, attempts - 1), 6000);
+            const delay = Math.min(1000 * Math.pow(2, attempts - 1), 7000);
             console.warn(
-              `[R2 UPLOAD] Part ${partNumber} failed (attempt ${attempts}/${maxAttempts}). Retrying in ${delay}ms...`
+              `[R2 UPLOAD] Part ${partNumber} retrying (attempt ${attempts}/${maxAttempts}) in ${delay}ms: ${err.message}`
             );
             setTimeout(executeAttempt, delay);
           } else {
@@ -403,7 +430,8 @@ export class R2UploadManager {
         };
 
         xhr.open('PUT', presignedUrl);
-        xhr.timeout = 60000; // 60s timeout per part
+        // Generous overall timeout (6 minutes) while activity watchdog ensures active data flow
+        xhr.timeout = 360000;
         xhr.send(blob);
       };
 

@@ -1243,6 +1243,10 @@ app.post('/api/uploads/multipart/complete', async (req, res) => {
     const session = activeUploadSessions.get(uploadId);
     const isDirectR2 = session ? session.isDirectR2 : r2StorageService.isR2Configured();
     const targetLocalPath = pamphletProcessor.getUploadPath(room.id, fileId, fileName);
+    const targetDir = path.dirname(targetLocalPath);
+    if (!fs.existsSync(targetDir)) {
+      fs.mkdirSync(targetDir, { recursive: true });
+    }
 
     if (isDirectR2) {
       // Complete directly in Cloudflare R2
@@ -1257,18 +1261,41 @@ app.post('/api/uploads/multipart/complete', async (req, res) => {
       if (!fs.existsSync(chunksDir)) {
         throw new Error('پوشه قطعات موقت یافت نشد');
       }
-      const writeStream = fs.createWriteStream(targetLocalPath);
-      const sortedParts = [...parts].sort((a, b) => a.PartNumber - b.PartNumber);
-      for (const p of sortedParts) {
-        const pPath = path.join(chunksDir, `part_${p.PartNumber}`);
-        if (fs.existsSync(pPath)) {
-          const buf = fs.readFileSync(pPath);
-          writeStream.write(buf);
-          try { fs.unlinkSync(pPath); } catch {}
+
+      await new Promise<void>((resolve, reject) => {
+        const writeStream = fs.createWriteStream(targetLocalPath);
+        writeStream.on('finish', () => resolve());
+        writeStream.on('error', (err) => reject(err));
+
+        try {
+          const sortedParts = [...parts].sort((a, b) => a.PartNumber - b.PartNumber);
+          for (const p of sortedParts) {
+            const pPath = path.join(chunksDir, `part_${p.PartNumber}`);
+            if (fs.existsSync(pPath)) {
+              const buf = fs.readFileSync(pPath);
+              writeStream.write(buf);
+            }
+          }
+          writeStream.end();
+        } catch (err) {
+          writeStream.end();
+          reject(err);
         }
-      }
-      writeStream.end();
-      try { fs.rmdirSync(chunksDir); } catch {}
+      });
+
+      // Cleanup chunks after complete write
+      try {
+        const sortedParts = [...parts].sort((a, b) => a.PartNumber - b.PartNumber);
+        for (const p of sortedParts) {
+          const pPath = path.join(chunksDir, `part_${p.PartNumber}`);
+          if (fs.existsSync(pPath)) fs.unlinkSync(pPath);
+        }
+        fs.rmdirSync(chunksDir);
+      } catch {}
+    }
+
+    if (!fs.existsSync(targetLocalPath)) {
+      throw new Error(`فایل نهایی در مسیر دیسک یافت نشد: ${targetLocalPath}`);
     }
 
     activeUploadSessions.delete(uploadId);
