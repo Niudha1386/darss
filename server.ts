@@ -1249,12 +1249,9 @@ app.post('/api/uploads/multipart/complete', async (req, res) => {
     }
 
     if (isDirectR2) {
-      // Complete directly in Cloudflare R2
+      // Complete directly in Cloudflare R2 (very fast metadata assembly)
       await r2StorageService.completeMultipartUpload(key, uploadId, parts);
       console.log(`[R2 MULTIPART] Completed R2 upload: key="${key}" (Parts: ${parts.length})`);
-
-      // Download from R2 to local cache for background RAG processing
-      await r2StorageService.downloadObjectToFile(key, targetLocalPath);
     } else {
       // Local fallback assembly
       const chunksDir = path.resolve(process.cwd(), `.data/uploads/chunks/${uploadId}`);
@@ -1292,10 +1289,6 @@ app.post('/api/uploads/multipart/complete', async (req, res) => {
         }
         fs.rmdirSync(chunksDir);
       } catch {}
-    }
-
-    if (!fs.existsSync(targetLocalPath)) {
-      throw new Error(`فایل نهایی در مسیر دیسک یافت نشد: ${targetLocalPath}`);
     }
 
     activeUploadSessions.delete(uploadId);
@@ -1354,34 +1347,68 @@ app.post('/api/uploads/multipart/complete', async (req, res) => {
 
     saveJobCheckpoint(job);
 
-    // Launch existing RAG pipeline processing in the background
-    pamphletProcessor.processDocument(job, (progress) => {
-      const p = (roomPamphlets.get(room.id) || []).find((item) => item.id === fileId);
-      if (p) {
-        p.status = progress.status;
-        p.processedPages = progress.current;
-        p.pagesCount = progress.total;
-        p.progressPercent = progress.percent;
-        p.error = progress.error;
-      }
-      saveStateToDisk();
-
-      broadcastToRoom(room.id, {
-        type: 'pamphlet-progress',
-        roomId: room.id,
-        fileId,
-        fileName,
-        status: progress.status,
-        current: progress.current,
-        total: progress.total,
-        percent: progress.percent,
-        error: progress.error,
-      });
-    }).catch((err) => {
-      console.error(`[PAMPHLET LOG ERROR] RAG Processing Error for ${fileId}:`, err);
-    });
-
+    // Respond immediately to the client so UI shows 100% complete without hanging at 99%!
     res.status(201).json(newPamphlet);
+
+    // Launch background file retrieval from R2 and RAG pipeline processing
+    (async () => {
+      try {
+        if (isDirectR2) {
+          // Stream from Cloudflare R2 to local cache for text extraction
+          await r2StorageService.downloadObjectToFile(key, targetLocalPath);
+        }
+
+        if (!fs.existsSync(targetLocalPath)) {
+          throw new Error(`فایل نهایی در مسیر دیسک یافت نشد: ${targetLocalPath}`);
+        }
+
+        pamphletProcessor.processDocument(job, (progress) => {
+          const p = (roomPamphlets.get(room.id) || []).find((item) => item.id === fileId);
+          if (p) {
+            p.status = progress.status;
+            p.processedPages = progress.current;
+            p.pagesCount = progress.total;
+            p.progressPercent = progress.percent;
+            p.error = progress.error;
+          }
+          saveStateToDisk();
+
+          broadcastToRoom(room.id, {
+            type: 'pamphlet-progress',
+            roomId: room.id,
+            fileId,
+            fileName,
+            status: progress.status,
+            current: progress.current,
+            total: progress.total,
+            percent: progress.percent,
+            error: progress.error,
+          });
+        }).catch((err) => {
+          console.error(`[PAMPHLET LOG ERROR] RAG Processing Error for ${fileId}:`, err);
+        });
+      } catch (err: any) {
+        console.error(`[PAMPHLET LOG ERROR] Background Download / Preparation Error for ${fileId}:`, err);
+        const p = (roomPamphlets.get(room.id) || []).find((item) => item.id === fileId);
+        if (p) {
+          p.status = 'error';
+          p.error = err.message || 'خطا در بارگیری فایل ابری برای پردازش';
+          saveStateToDisk();
+          broadcastToRoom(room.id, {
+            type: 'pamphlet-progress',
+            roomId: room.id,
+            fileId,
+            fileName,
+            status: 'error',
+            current: 0,
+            total: 0,
+            percent: 0,
+            error: p.error,
+          });
+        }
+      }
+    })();
+    return;
   } catch (err: any) {
     console.error('[R2 MULTIPART COMPLETE ERROR]:', err);
     res.status(500).json({ error: `خطا در تکمیل نهایی فایل: ${err.message}` });

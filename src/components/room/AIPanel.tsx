@@ -238,16 +238,26 @@ export const AIPanel: React.FC = () => {
           <div className="mt-2 p-3 rounded-2xl bg-indigo-50/95 dark:bg-indigo-950/70 border border-indigo-200 dark:border-indigo-800 text-[11px] shadow-sm animate-in fade-in duration-150 space-y-2">
             <div className="flex items-center justify-between font-bold">
               <span className="flex items-center gap-1.5 text-indigo-900 dark:text-indigo-200 truncate max-w-[170px]">
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-600 shrink-0" />
+                {uploadProgress.percent >= 100 ? (
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                ) : (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-600 shrink-0" />
+                )}
                 <span className="truncate" title={uploadProgress.fileName}>{uploadProgress.fileName}</span>
               </span>
 
               <div className="flex items-center gap-1.5 shrink-0">
-                <span className="text-[10px] font-mono font-bold text-indigo-600 dark:text-indigo-400 bg-white dark:bg-slate-900 px-2 py-0.5 rounded-md border border-indigo-200 dark:border-indigo-800">
+                <span
+                  className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-md border ${
+                    uploadProgress.percent >= 100
+                      ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60 border-emerald-200 dark:border-emerald-800'
+                      : 'text-indigo-600 dark:text-indigo-400 bg-white dark:bg-slate-900 border-indigo-200 dark:border-indigo-800'
+                  }`}
+                >
                   {uploadProgress.percent}٪
                 </span>
 
-                {uploadProgress.canCancel && uploadProgress.cancelUpload && (
+                {uploadProgress.canCancel && uploadProgress.cancelUpload && uploadProgress.percent < 100 && (
                   <button
                     type="button"
                     onClick={uploadProgress.cancelUpload}
@@ -263,7 +273,11 @@ export const AIPanel: React.FC = () => {
             {/* Glowing Multi-gradient Progress Track */}
             <div className="w-full h-2 bg-slate-200 dark:bg-slate-800 rounded-full overflow-hidden">
               <div
-                className="h-full bg-gradient-to-r from-indigo-500 via-sky-500 to-emerald-500 rounded-full transition-all duration-150 shadow-xs"
+                className={`h-full rounded-full transition-all duration-200 shadow-xs ${
+                  uploadProgress.percent >= 100
+                    ? 'bg-gradient-to-r from-emerald-500 to-teal-500'
+                    : 'bg-gradient-to-r from-indigo-500 via-sky-500 to-emerald-500'
+                }`}
                 style={{ width: `${Math.max(3, uploadProgress.percent)}%` }}
               />
             </div>

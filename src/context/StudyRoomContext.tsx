@@ -1150,6 +1150,19 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       });
 
       if (uploaded) {
+        setUploadProgress((prev) =>
+          prev
+            ? {
+                ...prev,
+                percent: 100,
+                loadedFormatted: prev.totalFormatted,
+                speedText: 'تکمیل شد ✓',
+                etaText: 'آپلود ۱۰۰٪ کامل شد',
+                phase: 'ready',
+                canCancel: false,
+              }
+            : null
+        );
         showToast(`جزوه «${file.name}» با موفقیت آپلود شد و پردازش صفحات آغاز گردید.`);
       }
     } catch (err: unknown) {

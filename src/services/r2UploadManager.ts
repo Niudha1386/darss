@@ -511,18 +511,20 @@ export class R2UploadManager {
     }
 
     const percent =
-      phase === 'ready'
+      phase === 'ready' || phase === 'completing' || phase === 'processing'
         ? 100
-        : phase === 'completing' || phase === 'processing'
-        ? 99
-        : Math.min(99, Math.floor((loaded / totalFileSize) * 100));
+        : Math.min(100, Math.floor((loaded / totalFileSize) * 100));
 
     const totalElapsedSec = (Date.now() - this.uploadStartTime) / 1000;
     const avgSpeedBps = totalElapsedSec > 0 ? loaded / totalElapsedSec : 0;
     const displaySpeedBps = this.currentSpeedBps > 0 ? this.currentSpeedBps : avgSpeedBps;
 
     const speedText =
-      displaySpeedBps > 1024 * 1024
+      phase === 'ready'
+        ? 'تکمیل شد ✓'
+        : phase === 'completing'
+        ? 'تایید نهایی...'
+        : displaySpeedBps > 1024 * 1024
         ? `${(displaySpeedBps / (1024 * 1024)).toFixed(1)} MB/s`
         : `${(displaySpeedBps / 1024).toFixed(0)} KB/s`;
 
@@ -543,9 +545,9 @@ export class R2UploadManager {
         etaText = `~${minutes} دقیقه و ${secs} ثانیه باقیمانده`;
       }
     } else if (phase === 'completing') {
-      etaText = 'در حال تکمیل در فضای ابری...';
-    } else if (phase === 'processing') {
-      etaText = 'در حال آماده‌سازی هوش مصنوعی...';
+      etaText = 'تایید نهایی در فضای ابری...';
+    } else if (phase === 'processing' || phase === 'ready') {
+      etaText = 'تکمیل شد ✓ آماده‌سازی هوش مصنوعی';
     }
 
     onProgress({
