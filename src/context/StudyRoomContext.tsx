@@ -16,6 +16,7 @@ import {
 import { useRouter, cleanRoomId } from '../hooks/useRouter';
 import { chatService } from '../services/chatService';
 import { roomService } from '../services/roomService';
+import { R2UploadManager } from '../services/r2UploadManager';
 import type { LiveKitDebugInfo } from '../components/room/LiveKitVoiceManager';
 
 export interface UploadProgressState {
@@ -25,6 +26,11 @@ export interface UploadProgressState {
   loadedFormatted: string;
   totalFormatted: string;
   speedText: string;
+  avgSpeedText?: string;
+  etaText?: string;
+  phase?: 'uploading' | 'completing' | 'processing' | 'ready';
+  canCancel?: boolean;
+  cancelUpload?: () => void;
 }
 
 interface StudyRoomContextType {
@@ -146,6 +152,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [aiMessages, setAiMessages] = useState<AIMessage[]>([]);
   const [pamphlets, setPamphlets] = useState<PamphletFile[]>([]);
   const [uploadProgress, setUploadProgress] = useState<UploadProgressState | null>(null);
+  const uploadManagerRef = useRef<R2UploadManager | null>(null);
 
   const [voiceState, setVoiceState] = useState<VoiceState>({
     isCallActive: false,
@@ -1077,7 +1084,7 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     reader.readAsDataURL(file);
   };
 
-  // Upload room pamphlet (PDF, TXT, DOCX) directly to backend
+  // Upload room pamphlet (PDF, TXT, DOCX) directly to Cloudflare R2
   const uploadPamphlet = async (file: File) => {
     if (!activeRoom) {
       showToast('ابتدا وارد اتاق شوید', 'error');
@@ -1089,44 +1096,74 @@ export const StudyRoomProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         ? `${(file.size / 1024).toFixed(0)} کیلوبایت`
         : `${(file.size / (1024 * 1024)).toFixed(1)} مگابایت`;
 
+    const manager = new R2UploadManager();
+    uploadManagerRef.current = manager;
+
+    const handleCancel = () => {
+      if (uploadManagerRef.current) {
+        uploadManagerRef.current.cancel();
+        uploadManagerRef.current = null;
+      }
+      setUploadProgress(null);
+      showToast('آپلود جزوه لغو شد.', 'info');
+    };
+
     setUploadProgress({
       isUploading: true,
       fileName: file.name,
       percent: 0,
       loadedFormatted: '۰ کیلوبایت',
       totalFormatted,
-      speedText: 'در حال شروع...',
+      speedText: 'در حال آماده‌سازی...',
+      avgSpeedText: '',
+      etaText: '',
+      phase: 'uploading',
+      canCancel: true,
+      cancelUpload: handleCancel,
     });
 
     try {
-      const uploaded = await chatService.uploadPamphletFile(file, (p) => {
-        const loadedFormatted =
-          p.loaded < 1024 * 1024
-            ? `${(p.loaded / 1024).toFixed(0)} کیلوبایت`
-            : `${(p.loaded / (1024 * 1024)).toFixed(1)} مگابایت`;
+      const uploaded = await manager.upload({
+        roomId: activeRoom.id,
+        file,
+        userName: currentUser.name,
+        onProgress: (p) => {
+          const loadedFormatted =
+            p.loaded < 1024 * 1024
+              ? `${(p.loaded / 1024).toFixed(0)} کیلوبایت`
+              : `${(p.loaded / (1024 * 1024)).toFixed(1)} مگابایت`;
 
-        setUploadProgress({
-          isUploading: true,
-          fileName: file.name,
-          percent: p.percent,
-          loadedFormatted,
-          totalFormatted,
-          speedText: p.speedText,
-        });
+          setUploadProgress({
+            isUploading: true,
+            fileName: file.name,
+            percent: p.percent,
+            loadedFormatted,
+            totalFormatted,
+            speedText: p.speedText,
+            avgSpeedText: p.avgSpeedText,
+            etaText: p.etaText,
+            phase: p.phase,
+            canCancel: p.phase === 'uploading',
+            cancelUpload: handleCancel,
+          });
+        },
       });
 
       if (uploaded) {
         showToast(`جزوه «${file.name}» با موفقیت آپلود شد و پردازش صفحات آغاز گردید.`);
-      } else {
-        showToast('خطا در آپلود جزوه به سرور', 'error');
       }
     } catch (err: unknown) {
+      if (err instanceof Error && err.message === 'UPLOAD_CANCELLED') {
+        // User deliberately canceled, toast was already handled
+        return;
+      }
       const msg = err instanceof Error ? err.message : 'خطا در آپلود جزوه';
       showToast(msg, 'error');
     } finally {
+      uploadManagerRef.current = null;
       setTimeout(() => {
         setUploadProgress(null);
-      }, 600);
+      }, 800);
     }
   };
 

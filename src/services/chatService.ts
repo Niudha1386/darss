@@ -11,7 +11,7 @@ import {
   WSServerMessage,
   ReplyToInfo,
 } from '../types';
-import { API_BASE_URL, getWebSocketUrl } from './apiConfig';
+import { R2UploadManager } from './r2UploadManager';
 
 type MessageHandler = (message: ChatMessage) => void;
 type PresenceHandler = (members: RoomMember[]) => void;
@@ -116,7 +116,7 @@ class ChatService {
 
     try {
       if (isInitial) {
-        const joinRes = await fetch(`${API_BASE_URL}/api/rooms/${this.currentRoomId}/join`, {
+        const joinRes = await fetch(`/api/rooms/${this.currentRoomId}/join`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ user: this.currentUser }),
@@ -132,7 +132,7 @@ class ChatService {
         }
       }
 
-      const res = await fetch(`${API_BASE_URL}/api/rooms/${this.currentRoomId}/sync-state`);
+      const res = await fetch(`/api/rooms/${this.currentRoomId}/sync-state`);
       if (res.ok) {
         const data = await res.json();
         if (isInitial) {
@@ -415,7 +415,7 @@ class ChatService {
     }
 
     if (!sentViaWs && this.currentRoomId) {
-      fetch(`${API_BASE_URL}/api/rooms/${this.currentRoomId}/messages`, {
+      fetch(`/api/rooms/${this.currentRoomId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...msgPayload, mode }),
@@ -446,7 +446,7 @@ class ChatService {
     const user = this.currentUser;
 
     try {
-      const res = await fetch(`${API_BASE_URL}/api/ai/chat`, {
+      const res = await fetch('/api/ai/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -498,7 +498,7 @@ class ChatService {
     const user = this.currentUser;
 
     try {
-      const res = await fetch(`${API_BASE_URL}/api/ai/vision`, {
+      const res = await fetch('/api/ai/vision', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -539,7 +539,7 @@ class ChatService {
    */
   public async checkAIStatus(): Promise<boolean> {
     try {
-      const res = await fetch(`${API_BASE_URL}/api/ai/status`);
+      const res = await fetch('/api/ai/status');
       if (res.ok) {
         const data = await res.json();
         return Boolean(data.available);
@@ -559,7 +559,7 @@ class ChatService {
     if (!this.currentRoomId || !this.currentUser) return null;
 
     try {
-      const res = await fetch(`${API_BASE_URL}/api/rooms/${this.currentRoomId}/pamphlets`, {
+      const res = await fetch(`/api/rooms/${this.currentRoomId}/pamphlets`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -596,185 +596,33 @@ class ChatService {
     return () => this.pamphletProgressListeners.delete(fn);
   }
 
-  public uploadPamphletFile(
+  public async uploadPamphletFile(
     file: File,
     onProgress?: (progress: { loaded: number; total: number; percent: number; speedText: string }) => void
   ): Promise<PamphletFile | null> {
-    if (!this.currentRoomId || !this.currentUser) return Promise.resolve(null);
+    if (!this.currentRoomId || !this.currentUser) return null;
 
-    const roomId = this.currentRoomId;
-    const userName = this.currentUser.name;
-
-    // Use chunk size of 2MB (2 * 1024 * 1024)
-    const CHUNK_SIZE = 2 * 1024 * 1024;
-    const totalSize = file.size;
-    const totalChunks = Math.ceil(totalSize / CHUNK_SIZE);
-    const uploadId = `up_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-
-    const chunkProgresses: { [index: number]: number } = {};
-    const startTime = Date.now();
-
-    const updateCombinedProgress = () => {
-      if (!onProgress) return;
-      let totalLoaded = 0;
-      for (let i = 0; i < totalChunks; i++) {
-        totalLoaded += chunkProgresses[i] || 0;
-      }
-      if (totalLoaded > totalSize) totalLoaded = totalSize;
-
-      const percent = Math.min(99, Math.round((totalLoaded / totalSize) * 100));
-      const elapsedSec = (Date.now() - startTime) / 1000;
-      const speedBps = elapsedSec > 0 ? totalLoaded / elapsedSec : 0;
-      const speedText =
-        speedBps > 1024 * 1024
-          ? `${(speedBps / (1024 * 1024)).toFixed(1)} مگابایت/ثانیه`
-          : `${(speedBps / 1024).toFixed(0)} کیلوبایت/ثانیه`;
-
-      onProgress({
-        loaded: totalLoaded,
-        total: totalSize,
-        percent,
-        speedText,
-      });
-    };
-
-    // Single chunk upload logic using Promise
-    const uploadChunk = (chunkIndex: number, chunkBlob: Blob): Promise<void> => {
-      return new Promise((resolve, reject) => {
-        let attempts = 0;
-        const maxAttempts = 3;
-
-        const attemptUpload = () => {
-          const xhr = new XMLHttpRequest();
-          xhr.upload.onprogress = (e) => {
-            if (e.lengthComputable) {
-              chunkProgresses[chunkIndex] = e.loaded;
-              updateCombinedProgress();
-            }
-          };
-
-          xhr.onload = () => {
-            if (xhr.status >= 200 && xhr.status < 300) {
-              chunkProgresses[chunkIndex] = chunkBlob.size;
-              updateCombinedProgress();
-              resolve();
-            } else {
-              handleFailure();
-            }
-          };
-
-          xhr.onerror = () => {
-            handleFailure();
-          };
-
-          const handleFailure = () => {
-            attempts++;
-            if (attempts < maxAttempts) {
-              setTimeout(attemptUpload, 1000);
-            } else {
-              reject(new Error(`خطا در آپلود بخش ${chunkIndex + 1} پس از ۳ تلاش`));
-            }
-          };
-
-          const formData = new FormData();
-          formData.append('file', chunkBlob, `chunk_${chunkIndex}`);
-          formData.append('uploadId', uploadId);
-          formData.append('chunkIndex', String(chunkIndex));
-
-          xhr.open('POST', `${API_BASE_URL}/api/rooms/${roomId}/pamphlets/upload-chunk`);
-          xhr.send(formData);
-        };
-
-        attemptUpload();
-      });
-    };
-
-    return new Promise(async (resolve, reject) => {
-      try {
-        const queue: Array<{ index: number; blob: Blob }> = [];
-        for (let i = 0; i < totalChunks; i++) {
-          const start = i * CHUNK_SIZE;
-          const end = Math.min(start + CHUNK_SIZE, totalSize);
-          const chunkBlob = file.slice(start, end);
-          queue.push({ index: i, blob: chunkBlob });
-          chunkProgresses[i] = 0;
-        }
-
-        // Limit concurrency to 4 parallel HTTP streams
-        const CONCURRENCY = 4;
-        const activeUploads: Array<Promise<void>> = [];
-
-        const runNext = (): Promise<void> => {
-          if (queue.length === 0) return Promise.resolve();
-          const item = queue.shift()!;
-          const uploadPromise = uploadChunk(item.index, item.blob).then(() => {
-            // Remove ourselves from active set and start next
-            const idx = activeUploads.indexOf(uploadPromise);
-            if (idx >= 0) activeUploads.splice(idx, 1);
-          });
-          activeUploads.push(uploadPromise);
-
-          // Return after launching next chunk
-          let chainPromise: Promise<void> = uploadPromise;
-          if (queue.length > 0) {
-            chainPromise = uploadPromise.then(() => runNext());
-          }
-          return chainPromise;
-        };
-
-        // Launch up to CONCURRENCY items
-        const initialPromises: Array<Promise<void>> = [];
-        const itemsToLaunch = Math.min(CONCURRENCY, queue.length);
-        for (let i = 0; i < itemsToLaunch; i++) {
-          initialPromises.push(runNext());
-        }
-
-        // Wait for all chunks to finish uploading
-        await Promise.all(initialPromises);
-
-        // All chunks successfully uploaded! Now request assembly
+    const manager = new R2UploadManager();
+    const created: PamphletFile = await manager.upload({
+      roomId: this.currentRoomId,
+      file,
+      userName: this.currentUser.name,
+      onProgress: (p) => {
         if (onProgress) {
           onProgress({
-            loaded: totalSize,
-            total: totalSize,
-            percent: 99,
-            speedText: 'در حال سرهم‌بندی...',
+            loaded: p.loaded,
+            total: p.total,
+            percent: p.percent,
+            speedText: p.speedText,
           });
         }
-
-        const assembleRes = await fetch(`${API_BASE_URL}/api/rooms/${roomId}/pamphlets/assemble`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            uploadId,
-            fileName: file.name,
-            fileSize: totalSize,
-            fileType: file.name.split('.').pop()?.toUpperCase() || 'PDF',
-            totalChunks,
-            uploadedBy: userName,
-          }),
-        });
-
-        if (assembleRes.ok) {
-          const created: PamphletFile = await assembleRes.json();
-          this.pamphletListeners.forEach((fn) => fn(created));
-          if (onProgress) {
-            onProgress({
-              loaded: totalSize,
-              total: totalSize,
-              percent: 100,
-              speedText: 'تکمیل شد',
-            });
-          }
-          resolve(created);
-        } else {
-          const errData = await assembleRes.json().catch(() => ({}));
-          reject(new Error(errData.error || 'خطا در سرهم‌بندی قطعات جزوه'));
-        }
-      } catch (err: any) {
-        reject(err);
-      }
+      },
     });
+
+    if (created) {
+      this.pamphletListeners.forEach((fn) => fn(created));
+    }
+    return created;
   }
 
   private async uploadPamphletFallback(file: File): Promise<PamphletFile | null> {

@@ -32,6 +32,7 @@ import {
   deleteChunksForFile,
   type ProcessingJob,
 } from './src/services/pamphletProcessor';
+import { r2StorageService } from './src/services/r2StorageService';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1057,7 +1058,13 @@ app.delete('/api/rooms/:roomId/pamphlets/:fileId', (req, res) => {
 
   const pamphlet = list[index];
 
-  // 1. Delete file from Storage
+  // 1. Delete file from Cloudflare R2 Storage
+  const storageKey = pamphlet.storageKey || r2StorageService.generateObjectKey(room.id, fileId, pamphlet.name);
+  r2StorageService.deleteObject(storageKey).catch((e) => {
+    console.warn(`[R2 STORAGE] Warning deleting object ${storageKey}:`, e);
+  });
+
+  // 1.1 Delete local cached file from disk if present
   const targetPath = pamphletProcessor.getUploadPath(room.id, fileId, pamphlet.name);
   if (fs.existsSync(targetPath)) {
     try {
@@ -1084,6 +1091,337 @@ app.delete('/api/rooms/:roomId/pamphlets/:fileId', (req, res) => {
   console.log(`[PAMPHLET LOG] FILE_DELETED roomId=${room.id} fileId=${fileId} name="${pamphlet.name}"`);
 
   res.json({ message: 'جزوه با موفقیت حذف شد.' });
+});
+
+// =========================================================================
+// CLOUDFLARE R2 MULTIPART UPLOAD CONTROL PLANE API (Direct Browser -> R2)
+// =========================================================================
+
+interface ServerUploadSession {
+  roomId: string;
+  uploadId: string;
+  fileId: string;
+  key: string;
+  fileName: string;
+  fileSize: number;
+  partSize: number;
+  totalParts: number;
+  isDirectR2: boolean;
+  createdAt: number;
+}
+const activeUploadSessions = new Map<string, ServerUploadSession>();
+
+// Cleanup stale sessions older than 24 hours
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, sess] of activeUploadSessions.entries()) {
+    if (now - sess.createdAt > 24 * 3600 * 1000) {
+      activeUploadSessions.delete(id);
+    }
+  }
+}, 3600 * 1000);
+
+/**
+ * 1. Initialize Multipart Upload
+ * Control Plane only: Generates session, isolated object key, and Cloudflare R2 UploadId
+ */
+app.post('/api/uploads/multipart/init', async (req, res) => {
+  try {
+    const { roomId, fileName, fileSize, mimeType, partSize, totalParts } = req.body;
+    const room = findRoomCaseInsensitive(roomId);
+    if (!room) {
+      return res.status(404).json({ error: 'اتاق پیدا نشد' });
+    }
+
+    if (!fileName || !fileSize || fileSize <= 0) {
+      return res.status(400).json({ error: 'مشخصات فایل نامعتبر است' });
+    }
+
+    const fileId = `pamp-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    const key = r2StorageService.generateObjectKey(room.id, fileId, fileName);
+    const contentType = mimeType || 'application/octet-stream';
+
+    const isDirectR2 = r2StorageService.isR2Configured();
+    let uploadId: string;
+
+    if (isDirectR2) {
+      uploadId = await r2StorageService.createMultipartUpload(key, contentType);
+      console.log(`[R2 MULTIPART] Created R2 Upload Session: key="${key}" uploadId="${uploadId}"`);
+    } else {
+      uploadId = `local_up_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      console.log(`[R2 MULTIPART FALLBACK] Local fallback session: uploadId="${uploadId}"`);
+    }
+
+    activeUploadSessions.set(uploadId, {
+      roomId: room.id,
+      uploadId,
+      fileId,
+      key,
+      fileName,
+      fileSize,
+      partSize: partSize || 16 * 1024 * 1024,
+      totalParts: totalParts || Math.ceil(fileSize / (16 * 1024 * 1024)),
+      isDirectR2,
+      createdAt: Date.now(),
+    });
+
+    res.json({
+      uploadId,
+      fileId,
+      key,
+      isDirectR2,
+    });
+  } catch (err: any) {
+    console.error('[R2 MULTIPART INIT ERROR]:', err);
+    res.status(500).json({ error: `خطا در آغاز جلسه آپلود: ${err.message}` });
+  }
+});
+
+/**
+ * 2. Sign Parts for Direct Upload
+ * Generates presigned PUT URLs directly to Cloudflare R2 for requested part numbers
+ */
+app.post('/api/uploads/multipart/sign-parts', async (req, res) => {
+  try {
+    const { roomId, uploadId, key, partNumbers } = req.body;
+    const room = findRoomCaseInsensitive(roomId);
+    if (!room) {
+      return res.status(404).json({ error: 'اتاق پیدا نشد' });
+    }
+
+    // Security Check: Key MUST be scoped to the specified room!
+    if (!key || !key.startsWith(`studyroom/${room.id}/`)) {
+      return res.status(403).json({ error: 'عدم دسترسی به مسیر فایل مورد نظر' });
+    }
+
+    if (!uploadId || !Array.isArray(partNumbers) || partNumbers.length === 0) {
+      return res.status(400).json({ error: 'اطلاعات درخواست امضا ناقص است' });
+    }
+
+    const session = activeUploadSessions.get(uploadId);
+    const isDirectR2 = session ? session.isDirectR2 : r2StorageService.isR2Configured();
+
+    if (isDirectR2) {
+      // Cloudflare R2 Direct Presigned PUT URLs
+      const urls = await r2StorageService.getPresignedPartUrls(key, uploadId, partNumbers, 3600);
+      res.json({ urls });
+    } else {
+      // Local fallback direct stream URLs
+      const urls: Record<number, string> = {};
+      for (const p of partNumbers) {
+        urls[p] = `/api/uploads/multipart/part-fallback?uploadId=${encodeURIComponent(uploadId)}&partNumber=${p}`;
+      }
+      res.json({ urls });
+    }
+  } catch (err: any) {
+    console.error('[R2 MULTIPART SIGN ERROR]:', err);
+    res.status(500).json({ error: `خطا در ایجاد آدرس‌های امن: ${err.message}` });
+  }
+});
+
+/**
+ * 3. Complete Multipart Upload
+ * Control Plane only: Finalizes Cloudflare R2 multipart object, registers metadata, and runs RAG
+ */
+app.post('/api/uploads/multipart/complete', async (req, res) => {
+  try {
+    const { roomId, uploadId, fileId, key, fileName, fileSize, fileType, uploadedBy, parts } = req.body;
+    const room = findRoomCaseInsensitive(roomId);
+    if (!room) {
+      return res.status(404).json({ error: 'اتاق پیدا نشد' });
+    }
+
+    // Security Check: Room Isolation
+    if (!key || !key.startsWith(`studyroom/${room.id}/`)) {
+      return res.status(403).json({ error: 'عدم دسترسی به مسیر فایل' });
+    }
+
+    if (!uploadId || !fileId || !fileName || !Array.isArray(parts)) {
+      return res.status(400).json({ error: 'اطلاعات تکمیل آپلود ناقص است' });
+    }
+
+    const session = activeUploadSessions.get(uploadId);
+    const isDirectR2 = session ? session.isDirectR2 : r2StorageService.isR2Configured();
+    const targetLocalPath = pamphletProcessor.getUploadPath(room.id, fileId, fileName);
+
+    if (isDirectR2) {
+      // Complete directly in Cloudflare R2
+      await r2StorageService.completeMultipartUpload(key, uploadId, parts);
+      console.log(`[R2 MULTIPART] Completed R2 upload: key="${key}" (Parts: ${parts.length})`);
+
+      // Download from R2 to local cache for background RAG processing
+      await r2StorageService.downloadObjectToFile(key, targetLocalPath);
+    } else {
+      // Local fallback assembly
+      const chunksDir = path.resolve(process.cwd(), `.data/uploads/chunks/${uploadId}`);
+      if (!fs.existsSync(chunksDir)) {
+        throw new Error('پوشه قطعات موقت یافت نشد');
+      }
+      const writeStream = fs.createWriteStream(targetLocalPath);
+      const sortedParts = [...parts].sort((a, b) => a.PartNumber - b.PartNumber);
+      for (const p of sortedParts) {
+        const pPath = path.join(chunksDir, `part_${p.PartNumber}`);
+        if (fs.existsSync(pPath)) {
+          const buf = fs.readFileSync(pPath);
+          writeStream.write(buf);
+          try { fs.unlinkSync(pPath); } catch {}
+        }
+      }
+      writeStream.end();
+      try { fs.rmdirSync(chunksDir); } catch {}
+    }
+
+    activeUploadSessions.delete(uploadId);
+
+    const ext = (fileType || path.extname(fileName).replace('.', '') || 'FILE').toUpperCase();
+    const formattedSize =
+      fileSize < 1024 * 1024
+        ? `${(fileSize / 1024).toFixed(0)} کیلوبایت`
+        : `${(fileSize / (1024 * 1024)).toFixed(1)} مگابایت`;
+
+    const newPamphlet: PamphletFile = {
+      id: fileId,
+      roomId: room.id,
+      name: fileName,
+      size: formattedSize,
+      type: ext,
+      uploadedBy: uploadedBy || 'کاربر',
+      createdAt: new Date().toLocaleTimeString('fa-IR', {
+        timeZone: 'Asia/Tehran',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      }),
+      status: 'processing',
+      processedPages: 0,
+      progressPercent: 0,
+      totalChunks: 0,
+      storageKey: key,
+    };
+
+    if (!roomPamphlets.has(room.id)) {
+      roomPamphlets.set(room.id, []);
+    }
+    roomPamphlets.get(room.id)!.push(newPamphlet);
+    saveStateToDisk();
+
+    // Broadcast to everyone in room via WebSocket
+    broadcastToRoom(room.id, {
+      type: 'pamphlet-added',
+      roomId: room.id,
+      pamphlet: newPamphlet,
+    });
+
+    const job: ProcessingJob = {
+      fileId,
+      roomId: room.id,
+      fileName,
+      filePath: targetLocalPath,
+      fileType: ext,
+      totalPages: 0,
+      processedPages: 0,
+      status: 'processing',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    saveJobCheckpoint(job);
+
+    // Launch existing RAG pipeline processing in the background
+    pamphletProcessor.processDocument(job, (progress) => {
+      const p = (roomPamphlets.get(room.id) || []).find((item) => item.id === fileId);
+      if (p) {
+        p.status = progress.status;
+        p.processedPages = progress.current;
+        p.pagesCount = progress.total;
+        p.progressPercent = progress.percent;
+        p.error = progress.error;
+      }
+      saveStateToDisk();
+
+      broadcastToRoom(room.id, {
+        type: 'pamphlet-progress',
+        roomId: room.id,
+        fileId,
+        fileName,
+        status: progress.status,
+        current: progress.current,
+        total: progress.total,
+        percent: progress.percent,
+        error: progress.error,
+      });
+    }).catch((err) => {
+      console.error(`[PAMPHLET LOG ERROR] RAG Processing Error for ${fileId}:`, err);
+    });
+
+    res.status(201).json(newPamphlet);
+  } catch (err: any) {
+    console.error('[R2 MULTIPART COMPLETE ERROR]:', err);
+    res.status(500).json({ error: `خطا در تکمیل نهایی فایل: ${err.message}` });
+  }
+});
+
+/**
+ * 4. Abort Multipart Upload
+ * Control Plane only: Aborts in Cloudflare R2 to delete orphan parts and prevent storage costs
+ */
+app.post('/api/uploads/multipart/abort', async (req, res) => {
+  try {
+    const { roomId, uploadId, key } = req.body;
+    const room = findRoomCaseInsensitive(roomId);
+    if (!room) {
+      return res.status(404).json({ error: 'اتاق پیدا نشد' });
+    }
+
+    if (key && key.startsWith(`studyroom/${room.id}/`)) {
+      await r2StorageService.abortMultipartUpload(key, uploadId);
+    }
+
+    if (uploadId) {
+      const chunksDir = path.resolve(process.cwd(), `.data/uploads/chunks/${uploadId}`);
+      if (fs.existsSync(chunksDir)) {
+        try {
+          fs.rmSync(chunksDir, { recursive: true, force: true });
+        } catch {}
+      }
+      activeUploadSessions.delete(uploadId);
+    }
+
+    res.json({ success: true, message: 'جلسه آپلود با موفقیت لغو شد' });
+  } catch (err: any) {
+    console.warn('[R2 MULTIPART ABORT WARNING]:', err);
+    res.json({ success: true });
+  }
+});
+
+/**
+ * 5. Local Fallback direct streaming PUT endpoint (only used when R2 is not configured)
+ */
+app.put('/api/uploads/multipart/part-fallback', (req, res) => {
+  const uploadId = req.query.uploadId as string;
+  const partNumber = req.query.partNumber as string;
+  if (!uploadId || !partNumber) {
+    return res.status(400).send('Missing uploadId or partNumber');
+  }
+
+  const chunksDir = path.resolve(process.cwd(), `.data/uploads/chunks/${uploadId}`);
+  if (!fs.existsSync(chunksDir)) {
+    fs.mkdirSync(chunksDir, { recursive: true });
+  }
+
+  const partPath = path.join(chunksDir, `part_${partNumber}`);
+  const writeStream = fs.createWriteStream(partPath);
+  req.pipe(writeStream);
+
+  writeStream.on('finish', () => {
+    res.setHeader('ETag', `"etag_part_${partNumber}"`);
+    res.setHeader('Access-Control-Expose-Headers', 'ETag');
+    res.status(200).send('OK');
+  });
+
+  writeStream.on('error', (err) => {
+    res.status(500).send(err.message);
+  });
 });
 
 // 1.1 Parallel Chunk Upload Endpoint

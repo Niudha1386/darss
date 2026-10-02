@@ -1,6 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useStudyRoom } from '../../context/StudyRoomContext';
-import { API_BASE_URL } from '../../services/apiConfig';
 import { formatMathAndMarkdown } from '../../utils/mathRenderer';
 import { CopyButton } from '../ui/CopyButton';
 import {
@@ -234,30 +233,50 @@ export const AIPanel: React.FC = () => {
           )}
         </button>
 
-        {/* Live Fast Upload Progress Card */}
+        {/* Live Cloudflare R2 Direct Upload Progress Card */}
         {uploadProgress && uploadProgress.isUploading && (
-          <div className="mt-2 p-2.5 rounded-xl bg-indigo-50/90 dark:bg-indigo-950/60 border border-indigo-200 dark:border-indigo-800 text-[11px] shadow-xs animate-in fade-in duration-150">
-            <div className="flex items-center justify-between mb-1.5 font-bold">
-              <span className="flex items-center gap-1.5 text-indigo-700 dark:text-indigo-300 truncate max-w-[180px]">
+          <div className="mt-2 p-3 rounded-2xl bg-indigo-50/95 dark:bg-indigo-950/70 border border-indigo-200 dark:border-indigo-800 text-[11px] shadow-sm animate-in fade-in duration-150 space-y-2">
+            <div className="flex items-center justify-between font-bold">
+              <span className="flex items-center gap-1.5 text-indigo-900 dark:text-indigo-200 truncate max-w-[170px]">
                 <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-600 shrink-0" />
-                <span className="truncate">{uploadProgress.fileName}</span>
+                <span className="truncate" title={uploadProgress.fileName}>{uploadProgress.fileName}</span>
               </span>
-              <span className="text-[10px] font-mono text-indigo-600 dark:text-indigo-400 bg-white dark:bg-slate-900 px-1.5 py-0.5 rounded border border-indigo-200 dark:border-indigo-800">
-                {uploadProgress.percent}٪
-              </span>
+
+              <div className="flex items-center gap-1.5 shrink-0">
+                <span className="text-[10px] font-mono font-bold text-indigo-600 dark:text-indigo-400 bg-white dark:bg-slate-900 px-2 py-0.5 rounded-md border border-indigo-200 dark:border-indigo-800">
+                  {uploadProgress.percent}٪
+                </span>
+
+                {uploadProgress.canCancel && uploadProgress.cancelUpload && (
+                  <button
+                    type="button"
+                    onClick={uploadProgress.cancelUpload}
+                    className="p-1 rounded-md text-rose-500 hover:text-rose-700 hover:bg-rose-100/60 dark:hover:bg-rose-950/60 transition-colors cursor-pointer"
+                    title="انصراف و لغو آپلود"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
             </div>
 
-            {/* Glowing Progress Track */}
-            <div className="w-full h-2 bg-slate-200 dark:bg-slate-800 rounded-full overflow-hidden mb-1">
+            {/* Glowing Multi-gradient Progress Track */}
+            <div className="w-full h-2 bg-slate-200 dark:bg-slate-800 rounded-full overflow-hidden">
               <div
-                className="h-full bg-gradient-to-r from-indigo-500 via-purple-500 to-emerald-500 rounded-full transition-all duration-150"
-                style={{ width: `${Math.max(4, uploadProgress.percent)}%` }}
+                className="h-full bg-gradient-to-r from-indigo-500 via-sky-500 to-emerald-500 rounded-full transition-all duration-150 shadow-xs"
+                style={{ width: `${Math.max(3, uploadProgress.percent)}%` }}
               />
             </div>
 
-            <div className="flex items-center justify-between text-[10px] text-slate-500 dark:text-slate-400">
+            {/* Detailed Transfer Metrics: Size, Speed, ETA */}
+            <div className="flex items-center justify-between text-[10px] text-slate-600 dark:text-slate-400 pt-0.5">
               <span>{uploadProgress.loadedFormatted} از {uploadProgress.totalFormatted}</span>
-              <span className="font-mono text-indigo-600 dark:text-indigo-400">{uploadProgress.speedText}</span>
+              <div className="flex items-center gap-2 font-mono font-semibold text-indigo-600 dark:text-indigo-400">
+                {uploadProgress.etaText && (
+                  <span className="text-slate-500 dark:text-slate-400 font-sans">{uploadProgress.etaText}</span>
+                )}
+                <span>{uploadProgress.speedText}</span>
+              </div>
             </div>
           </div>
         )}
@@ -337,7 +356,7 @@ export const AIPanel: React.FC = () => {
                           <button
                             type="button"
                             onClick={() => {
-                              fetch(`${API_BASE_URL}/api/rooms/${item.roomId}/pamphlets/${item.id}/resume`, { method: 'POST' }).catch(() => {});
+                              fetch(`/api/rooms/${item.roomId}/pamphlets/${item.id}/resume`, { method: 'POST' }).catch(() => {});
                             }}
                             className="px-1.5 py-0.5 rounded-md bg-rose-50 dark:bg-rose-950/40 hover:bg-rose-100 dark:hover:bg-rose-900 border border-rose-200/50 text-[9px] font-bold cursor-pointer transition-colors"
                           >

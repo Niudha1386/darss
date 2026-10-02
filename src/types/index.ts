@@ -121,6 +121,7 @@ export interface PamphletFile {
   error?: string;
   errorCode?: string;
   totalChunks?: number;
+  storageKey?: string;
 }
 
 export interface LiveKitConfig {
