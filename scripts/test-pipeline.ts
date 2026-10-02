@@ -1,4 +1,3 @@
-import '../src/services/pdfPolyfill';
 import fs from 'fs';
 import path from 'path';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
