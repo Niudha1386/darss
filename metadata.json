@@ -1,0 +1,6 @@
+{
+  "name": "StudyRoom - اتاق مطالعه آنلاین",
+  "description": "وباپلیکیشن مدرن مطالعه گروهی با چت، تماس صوتی، دستیار هوشمند و اشتراک جزوه",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
