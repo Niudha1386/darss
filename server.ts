@@ -1107,6 +1107,9 @@ interface ServerUploadSession {
   partSize: number;
   totalParts: number;
   isDirectR2: boolean;
+  targetLocalPath: string;
+  fd?: number;
+  receivedParts: Set<number>;
   createdAt: number;
 }
 const activeUploadSessions = new Map<string, ServerUploadSession>();
@@ -1116,6 +1119,9 @@ setInterval(() => {
   const now = Date.now();
   for (const [id, sess] of activeUploadSessions.entries()) {
     if (now - sess.createdAt > 24 * 3600 * 1000) {
+      if (sess.fd) {
+        try { fs.closeSync(sess.fd); } catch {}
+      }
       activeUploadSessions.delete(id);
     }
   }
@@ -1149,7 +1155,22 @@ app.post('/api/uploads/multipart/init', async (req, res) => {
       console.log(`[R2 MULTIPART] Created R2 Upload Session: key="${key}" uploadId="${uploadId}"`);
     } else {
       uploadId = `local_up_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-      console.log(`[R2 MULTIPART FALLBACK] Local fallback session: uploadId="${uploadId}"`);
+      console.log(`[R2 MULTIPART FALLBACK] Local turbo fallback session: uploadId="${uploadId}"`);
+    }
+
+    const targetLocalPath = pamphletProcessor.getUploadPath(room.id, fileId, fileName);
+    const targetDir = path.dirname(targetLocalPath);
+    if (!fs.existsSync(targetDir)) {
+      fs.mkdirSync(targetDir, { recursive: true });
+    }
+
+    let fd: number | undefined;
+    if (!isDirectR2) {
+      try {
+        fd = fs.openSync(targetLocalPath, 'w+');
+      } catch (err) {
+        console.warn('Could not pre-open fd for turbo streaming:', err);
+      }
     }
 
     activeUploadSessions.set(uploadId, {
@@ -1159,9 +1180,12 @@ app.post('/api/uploads/multipart/init', async (req, res) => {
       key,
       fileName,
       fileSize,
-      partSize: partSize || 16 * 1024 * 1024,
-      totalParts: totalParts || Math.ceil(fileSize / (16 * 1024 * 1024)),
+      partSize: partSize || 8 * 1024 * 1024,
+      totalParts: totalParts || Math.ceil(fileSize / (8 * 1024 * 1024)),
       isDirectR2,
+      targetLocalPath,
+      fd,
+      receivedParts: new Set<number>(),
       createdAt: Date.now(),
     });
 
@@ -1179,7 +1203,7 @@ app.post('/api/uploads/multipart/init', async (req, res) => {
 
 /**
  * 2. Sign Parts for Direct Upload
- * Generates presigned PUT URLs directly to Cloudflare R2 for requested part numbers
+ * Generates presigned PUT URLs directly to Cloudflare R2 and high-speed fallback URLs
  */
 app.post('/api/uploads/multipart/sign-parts', async (req, res) => {
   try {
@@ -1201,17 +1225,18 @@ app.post('/api/uploads/multipart/sign-parts', async (req, res) => {
     const session = activeUploadSessions.get(uploadId);
     const isDirectR2 = session ? session.isDirectR2 : r2StorageService.isR2Configured();
 
+    const fallbackUrls: Record<number, string> = {};
+    for (const p of partNumbers) {
+      fallbackUrls[p] = `/api/uploads/multipart/part-fallback?uploadId=${encodeURIComponent(uploadId)}&partNumber=${p}`;
+    }
+
     if (isDirectR2) {
-      // Cloudflare R2 Direct Presigned PUT URLs
+      // Cloudflare R2 Direct Presigned PUT URLs + Turbo fallback for Iran/unblocked access
       const urls = await r2StorageService.getPresignedPartUrls(key, uploadId, partNumbers, 3600);
-      res.json({ urls });
+      res.json({ urls, fallbackUrls });
     } else {
-      // Local fallback direct stream URLs
-      const urls: Record<number, string> = {};
-      for (const p of partNumbers) {
-        urls[p] = `/api/uploads/multipart/part-fallback?uploadId=${encodeURIComponent(uploadId)}&partNumber=${p}`;
-      }
-      res.json({ urls });
+      // Turbo local stream URLs directly to server
+      res.json({ urls: fallbackUrls, fallbackUrls });
     }
   } catch (err: any) {
     console.error('[R2 MULTIPART SIGN ERROR]:', err);
@@ -1253,42 +1278,42 @@ app.post('/api/uploads/multipart/complete', async (req, res) => {
       await r2StorageService.completeMultipartUpload(key, uploadId, parts);
       console.log(`[R2 MULTIPART] Completed R2 upload: key="${key}" (Parts: ${parts.length})`);
     } else {
-      // Local fallback assembly
-      const chunksDir = path.resolve(process.cwd(), `.data/uploads/chunks/${uploadId}`);
-      if (!fs.existsSync(chunksDir)) {
-        throw new Error('پوشه قطعات موقت یافت نشد');
+      // Turbo Zero-Copy: close the pre-opened file descriptor instantaneously
+      if (session?.fd) {
+        try {
+          fs.closeSync(session.fd);
+          session.fd = undefined;
+        } catch {}
       }
 
-      await new Promise<void>((resolve, reject) => {
-        const writeStream = fs.createWriteStream(targetLocalPath);
-        writeStream.on('finish', () => resolve());
-        writeStream.on('error', (err) => reject(err));
+      // Legacy fallback support if chunksDir exists
+      const chunksDir = path.resolve(process.cwd(), `.data/uploads/chunks/${uploadId}`);
+      if (fs.existsSync(chunksDir)) {
+        await new Promise<void>((resolve, reject) => {
+          const writeStream = fs.createWriteStream(targetLocalPath);
+          writeStream.on('finish', () => resolve());
+          writeStream.on('error', (err) => reject(err));
+
+          try {
+            const sortedParts = [...parts].sort((a, b) => a.PartNumber - b.PartNumber);
+            for (const p of sortedParts) {
+              const pPath = path.join(chunksDir, `part_${p.PartNumber}`);
+              if (fs.existsSync(pPath)) {
+                const buf = fs.readFileSync(pPath);
+                writeStream.write(buf);
+              }
+            }
+            writeStream.end();
+          } catch (err) {
+            writeStream.end();
+            reject(err);
+          }
+        });
 
         try {
-          const sortedParts = [...parts].sort((a, b) => a.PartNumber - b.PartNumber);
-          for (const p of sortedParts) {
-            const pPath = path.join(chunksDir, `part_${p.PartNumber}`);
-            if (fs.existsSync(pPath)) {
-              const buf = fs.readFileSync(pPath);
-              writeStream.write(buf);
-            }
-          }
-          writeStream.end();
-        } catch (err) {
-          writeStream.end();
-          reject(err);
-        }
-      });
-
-      // Cleanup chunks after complete write
-      try {
-        const sortedParts = [...parts].sort((a, b) => a.PartNumber - b.PartNumber);
-        for (const p of sortedParts) {
-          const pPath = path.join(chunksDir, `part_${p.PartNumber}`);
-          if (fs.existsSync(pPath)) fs.unlinkSync(pPath);
-        }
-        fs.rmdirSync(chunksDir);
-      } catch {}
+          fs.rmSync(chunksDir, { recursive: true, force: true });
+        } catch {}
+      }
     }
 
     activeUploadSessions.delete(uploadId);
@@ -1432,6 +1457,16 @@ app.post('/api/uploads/multipart/abort', async (req, res) => {
     }
 
     if (uploadId) {
+      const session = activeUploadSessions.get(uploadId);
+      if (session) {
+        if (session.fd) {
+          try { fs.closeSync(session.fd); session.fd = undefined; } catch {}
+        }
+        if (session.targetLocalPath && fs.existsSync(session.targetLocalPath)) {
+          try { fs.unlinkSync(session.targetLocalPath); } catch {}
+        }
+      }
+
       const chunksDir = path.resolve(process.cwd(), `.data/uploads/chunks/${uploadId}`);
       if (fs.existsSync(chunksDir)) {
         try {
@@ -1449,31 +1484,59 @@ app.post('/api/uploads/multipart/abort', async (req, res) => {
 });
 
 /**
- * 5. Local Fallback direct streaming PUT endpoint (only used when R2 is not configured)
+ * 5. High-Speed Turbo Direct Streaming PUT endpoint (Zero-copy parallel disk streaming)
  */
 app.put('/api/uploads/multipart/part-fallback', (req, res) => {
   const uploadId = req.query.uploadId as string;
-  const partNumber = req.query.partNumber as string;
-  if (!uploadId || !partNumber) {
-    return res.status(400).send('Missing uploadId or partNumber');
+  const partNumber = Number(req.query.partNumber);
+  if (!uploadId || !partNumber || isNaN(partNumber)) {
+    return res.status(400).send('Missing uploadId or valid partNumber');
   }
 
-  const chunksDir = path.resolve(process.cwd(), `.data/uploads/chunks/${uploadId}`);
-  if (!fs.existsSync(chunksDir)) {
-    fs.mkdirSync(chunksDir, { recursive: true });
+  const session = activeUploadSessions.get(uploadId);
+  if (!session) {
+    return res.status(404).send('Session not found or expired');
   }
 
-  const partPath = path.join(chunksDir, `part_${partNumber}`);
-  const writeStream = fs.createWriteStream(partPath);
-  req.pipe(writeStream);
+  const partSize = session.partSize;
+  const startOffset = (partNumber - 1) * partSize;
 
-  writeStream.on('finish', () => {
-    res.setHeader('ETag', `"etag_part_${partNumber}"`);
+  let fd = session.fd;
+  if (!fd) {
+    try {
+      const targetDir = path.dirname(session.targetLocalPath);
+      if (!fs.existsSync(targetDir)) {
+        fs.mkdirSync(targetDir, { recursive: true });
+      }
+      fd = fs.openSync(session.targetLocalPath, 'w+');
+      session.fd = fd;
+    } catch (err: any) {
+      return res.status(500).send(`Error opening destination file: ${err.message}`);
+    }
+  }
+
+  let currentOffset = startOffset;
+  let bytesWritten = 0;
+
+  req.on('data', (chunk: Buffer) => {
+    try {
+      fs.writeSync(fd!, chunk, 0, chunk.length, currentOffset);
+      currentOffset += chunk.length;
+      bytesWritten += chunk.length;
+    } catch (err) {
+      console.error(`[TURBO UPLOAD] Error writing part ${partNumber} at offset ${currentOffset}:`, err);
+    }
+  });
+
+  req.on('end', () => {
+    session.receivedParts.add(partNumber);
+    res.setHeader('ETag', `"turbo_part_${partNumber}_${bytesWritten}"`);
     res.setHeader('Access-Control-Expose-Headers', 'ETag');
     res.status(200).send('OK');
   });
 
-  writeStream.on('error', (err) => {
+  req.on('error', (err) => {
+    console.error(`[TURBO UPLOAD] Stream error for part ${partNumber}:`, err);
     res.status(500).send(err.message);
   });
 });

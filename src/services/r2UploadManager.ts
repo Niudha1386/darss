@@ -58,9 +58,9 @@ interface StoredUploadSession {
 export class R2UploadManager {
   private activeXhrs: Set<XMLHttpRequest> = new Set();
   private isAborted: boolean = false;
-  private currentConcurrency: number = 3; // Start conservative for high reliability
-  private minConcurrency: number = 1;
-  private maxConcurrency: number = 6;
+  private currentConcurrency: number = 4; // Fast parallel streams
+  private minConcurrency: number = 2;
+  private maxConcurrency: number = 8;
 
   private uploadStartTime: number = 0;
   private lastProgressTime: number = 0;
@@ -75,6 +75,9 @@ export class R2UploadManager {
   private fileId: string = '';
   private objectKey: string = '';
   private roomId: string = '';
+
+  private usingFallback: boolean = false;
+  private fallbackUrls: Record<number, string> = {};
 
   /**
    * Calculates optimal Part Size for S3 / Cloudflare R2:
@@ -278,7 +281,9 @@ export class R2UploadManager {
       if (this.isAborted || currentIndex >= partNumbers.length) return;
 
       const partNum = partNumbers[currentIndex++];
-      const url = presignedUrls[partNum];
+      const url = this.usingFallback
+        ? this.fallbackUrls[partNum] || presignedUrls[partNum]
+        : presignedUrls[partNum];
       if (!url) {
         throw new Error(`آدرس امضاشده برای بخش ${partNum} یافت نشد.`);
       }
@@ -406,11 +411,24 @@ export class R2UploadManager {
 
         xhr.onerror = () => {
           cleanupTimers();
+          if (!this.usingFallback && this.fallbackUrls[partNumber]) {
+            console.log(
+              `[UPLOAD MANAGER] Cloudflare R2 unreachable (without VPN). Auto-switching to Turbo High-Speed Stream!`
+            );
+            this.usingFallback = true;
+            setTimeout(executeAttempt, 40);
+            return;
+          }
           handleRetry(new Error(`قطع ارتباط شبکه در بخش ${partNumber}`));
         };
 
         xhr.ontimeout = () => {
           cleanupTimers();
+          if (!this.usingFallback && this.fallbackUrls[partNumber]) {
+            this.usingFallback = true;
+            setTimeout(executeAttempt, 40);
+            return;
+          }
           handleRetry(new Error(`پایان زمان انتظار در بخش ${partNumber}`));
         };
 
@@ -429,7 +447,11 @@ export class R2UploadManager {
           }
         };
 
-        xhr.open('PUT', presignedUrl);
+        const uploadUrl = this.usingFallback
+          ? this.fallbackUrls[partNumber] || presignedUrl
+          : presignedUrl;
+
+        xhr.open('PUT', uploadUrl);
         // Generous overall timeout (6 minutes) while activity watchdog ensures active data flow
         xhr.timeout = 360000;
         xhr.send(blob);
@@ -460,6 +482,9 @@ export class R2UploadManager {
     }
 
     const data = await res.json();
+    if (data.fallbackUrls) {
+      this.fallbackUrls = { ...this.fallbackUrls, ...data.fallbackUrls };
+    }
     return data.urls || {};
   }
 
