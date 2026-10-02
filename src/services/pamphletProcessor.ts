@@ -1,4 +1,5 @@
 import './pdfPolyfill';
+import { systemLogger } from './systemLogger';
 import fs from 'fs';
 import path from 'path';
 import mammoth from 'mammoth';
@@ -483,6 +484,11 @@ export class PamphletProcessor {
       saveChunks(job.roomId, job.fileId, chunks);
       return { totalPages, chunks };
     } catch (err: unknown) {
+      systemLogger.error('pdf', `PDF_EXTRACTION_FAILED fileId=${job.fileId}: ${err instanceof Error ? err.message : String(err)}`, err, {
+        fileId: job.fileId,
+        fileName: job.fileName,
+        roomId: job.roomId,
+      });
       console.error(`[PAMPHLET LOG ERROR] PDF_EXTRACTION_FAILED fileId=${job.fileId}:`, err);
       throw new Error(`PDF_EXTRACTION_FAILED: ${err instanceof Error ? err.message : String(err)}`);
     }

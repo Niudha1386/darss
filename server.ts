@@ -1,4 +1,6 @@
 import './src/services/pdfPolyfill';
+import { systemLogger } from './src/services/systemLogger';
+systemLogger.initializeHooks();
 import 'dotenv/config';
 import express from 'express';
 import http from 'http';
@@ -236,6 +238,56 @@ app.get('/api/health', (req, res) => {
     roomsCount: rooms.size,
     geminiConfigured: hasGeminiKey,
   });
+});
+
+// Central System Logging & Diagnostics API
+app.get('/api/logs', (req, res) => {
+  try {
+    const level = req.query.level as any;
+    const category = req.query.category as any;
+    const limit = req.query.limit ? Number(req.query.limit) : 100;
+    const logs = systemLogger.getLogs({ level, category, limit });
+    const stats = systemLogger.getStats();
+    res.json({ success: true, logs, stats });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/logs', (req, res) => {
+  try {
+    const { message, errorName, stack, context, level } = req.body || {};
+    if (message) {
+      if (level === 'warn') {
+        systemLogger.warn('client', String(message), context);
+      } else {
+        const err = stack ? Object.assign(new Error(String(message)), { name: errorName || 'ClientError', stack }) : undefined;
+        systemLogger.error('client', String(message), err, context);
+      }
+    }
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/logs/report', (req, res) => {
+  try {
+    const report = systemLogger.generateDiagnosticReport();
+    const stats = systemLogger.getStats();
+    res.json({ success: true, report, stats });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.delete('/api/logs', (req, res) => {
+  try {
+    systemLogger.clearLogs();
+    res.json({ success: true, message: 'Logs cleared successfully' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 app.get('/api/rooms', (req, res) => {
@@ -2194,6 +2246,22 @@ async function startServer() {
       res.sendFile(distIndex);
     });
   }
+
+  // Central Express Error Handling Middleware
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    systemLogger.error('api', `Express API Error: ${err?.message || err}`, err, {
+      method: req.method,
+      url: req.originalUrl,
+      ip: req.ip,
+    });
+    if (res.headersSent) {
+      return next(err);
+    }
+    res.status(500).json({
+      error: 'Internal Server Error',
+      message: err?.message || 'یک خطای سروری رخ داد',
+    });
+  });
 
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`StudyRoom Server running on http://0.0.0.0:${PORT}`);

@@ -8,7 +8,8 @@ import {
   LogOut,
   Sun,
   Moon,
-  GraduationCap
+  GraduationCap,
+  Bug
 } from 'lucide-react';
 
 interface RoomHeaderProps {
@@ -20,7 +21,7 @@ export const RoomHeader: React.FC<RoomHeaderProps> = ({
   onOpenSidebarDrawer,
   onOpenAIDrawer,
 }) => {
-  const { activeRoom, copyRoomLink, leaveRoom, theme, toggleTheme, members, connectionStatus } = useStudyRoom();
+  const { activeRoom, copyRoomLink, leaveRoom, theme, toggleTheme, members, connectionStatus, openModal } = useStudyRoom();
 
   const safeMembers = Array.isArray(members) ? members : [];
   const onlineCount = safeMembers.filter((m) => m && m.isOnline).length;
@@ -94,6 +95,16 @@ export const RoomHeader: React.FC<RoomHeaderProps> = ({
             title="دستیار هوشمند"
           >
             <Bot className="w-4 h-4" />
+          </button>
+
+          {/* Error Logs & Diagnostics Button */}
+          <button
+            type="button"
+            onClick={() => openModal('error-logs')}
+            className="min-w-[38px] min-h-[38px] p-2 rounded-xl text-rose-500 hover:text-rose-700 dark:text-rose-400 dark:hover:text-rose-300 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:hover:bg-rose-900/50 border border-rose-200/80 dark:border-rose-900/50 transition-colors cursor-pointer flex items-center justify-center shrink-0"
+            title="گزارش خطاها و عیب‌یابی سامانه"
+          >
+            <Bug className="w-4 h-4" />
           </button>
 
           <PWAInstallButton className="hidden md:inline-flex" />

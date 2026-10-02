@@ -18,7 +18,8 @@ import {
   Users,
   GraduationCap,
   Zap,
-  BookOpen
+  BookOpen,
+  Bug
 } from 'lucide-react';
 
 export const Lobby: React.FC = () => {
@@ -49,8 +50,8 @@ export const Lobby: React.FC = () => {
           }))
         );
       }
-    } catch (err) {
-      console.error('Error fetching rooms:', err);
+    } catch {
+      // ignore
     } finally {
       setIsLoadingRooms(false);
     }
@@ -87,6 +88,14 @@ export const Lobby: React.FC = () => {
           {/* Zone 3: Actions */}
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <PWAInstallButton />
+
+            <button
+              onClick={() => openModal('error-logs')}
+              className="p-2 min-w-[36px] min-h-[36px] rounded-xl text-rose-500 hover:text-rose-700 dark:text-rose-400 dark:hover:text-rose-300 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:hover:bg-rose-900/50 border border-rose-200/80 dark:border-rose-900/50 transition-colors cursor-pointer flex items-center justify-center shrink-0"
+              title="گزارش خطاها و عیب‌یابی سامانه"
+            >
+              <Bug className="w-4 h-4" />
+            </button>
             
             <button
               onClick={toggleTheme}
@@ -319,7 +328,14 @@ export const Lobby: React.FC = () => {
         <div className="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
           <p>© {new Date().getFullYear()} StudyRoom — وب‌اپلیکیشن مطالعه گروهی آنلاین</p>
           <div className="flex items-center gap-4 text-slate-500">
-            <span>ساده، مینیمال و پاسخگو</span>
+            <button
+              type="button"
+              onClick={() => openModal('error-logs')}
+              className="text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1 cursor-pointer font-semibold"
+            >
+              <Bug className="w-3.5 h-3.5" />
+              <span>گزارش خطاها و لاگ‌ها</span>
+            </button>
             <span>·</span>
             <span>طراحی شده برای موبایل و دسکتاپ</span>
           </div>
