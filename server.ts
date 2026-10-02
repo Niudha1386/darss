@@ -35,12 +35,8 @@ const __dirname = path.dirname(__filename);
 const PORT = Number(process.env.PORT) || 3000;
 
 const tempUploadDir = path.resolve(process.cwd(), '.data/uploads/temp');
-try {
-  if (!fs.existsSync(tempUploadDir)) {
-    fs.mkdirSync(tempUploadDir, { recursive: true });
-  }
-} catch (err) {
-  console.warn('[SERVER STARTUP] Could not create tempUploadDir:', err);
+if (!fs.existsSync(tempUploadDir)) {
+  fs.mkdirSync(tempUploadDir, { recursive: true });
 }
 const upload = multer({
   dest: tempUploadDir,
@@ -77,7 +73,7 @@ app.use((req, res, next) => {
   const origin = req.headers.origin;
   if (origin) {
     res.setHeader('Access-Control-Allow-Origin', origin);
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   }
   if (req.method === 'OPTIONS') {
@@ -86,52 +82,8 @@ app.use((req, res, next) => {
   next();
 });
 
-// Unified In-Memory Logging System for Diagnosing Worker/CORS Issues
-const serverLogs: Array<{ time: string; level: string; msg: string }> = [];
-
-export function logToBuffer(level: 'INFO' | 'WARN' | 'ERROR', msg: string, details?: any) {
-  const time = new Date().toISOString();
-  let fullMsg = msg;
-  if (details) {
-    fullMsg += ' | ' + (details instanceof Error ? details.stack || details.message : typeof details === 'object' ? JSON.stringify(details) : String(details));
-  }
-  
-  if (level === 'ERROR') {
-    console.error(`[${level}] ${msg}`, details || '');
-  } else if (level === 'WARN') {
-    console.warn(`[${level}] ${msg}`, details || '');
-  } else {
-    console.log(`[${level}] ${msg}`, details || '');
-  }
-  
-  serverLogs.push({ time, level, msg: fullMsg });
-  if (serverLogs.length > 500) {
-    serverLogs.shift();
-  }
-}
-
 // JSON body parser with 25MB limit for pamphlet uploads
 app.use(express.json({ limit: '25mb' }));
-
-app.get('/api/logs', (req, res) => {
-  if (req.query.format === 'text') {
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    const text = serverLogs.map(l => `[${l.time}] [${l.level}] ${l.msg}`).join('\n');
-    return res.send(text || 'هیچ لاگی ثبت نشده است.');
-  }
-  res.json({
-    total: serverLogs.length,
-    logs: serverLogs
-  });
-});
-
-app.post('/api/logs', (req, res) => {
-  const { level = 'INFO', msg, details } = req.body;
-  if (msg) {
-    logToBuffer(level, `[CLIENT] ${msg}`, details);
-  }
-  res.sendStatus(204);
-});
 
 // In-Memory Database for Rooms, Messages, AI Conversations, and Pamphlets
 const rooms = new Map<string, RoomData>();
@@ -352,7 +304,6 @@ app.post('/api/rooms', (req, res) => {
   if (!roomPamphlets.has(roomId)) roomPamphlets.set(roomId, []);
 
   saveStateToDisk();
-  logToBuffer('INFO', `اتاق جدیدی با موفقیت ساخته شد: ID=${roomId}, Name="${name.trim()}", Creator="${hostMember.name}"`);
   res.status(201).json(newRoom);
 });
 
@@ -1101,15 +1052,8 @@ app.post('/api/rooms/:roomId/pamphlets/upload-chunk', upload.single('file'), asy
   }
 
   const chunksDir = path.resolve(process.cwd(), `.data/uploads/chunks/${uploadId}`);
-  try {
-    if (!fs.existsSync(chunksDir)) {
-      fs.mkdirSync(chunksDir, { recursive: true });
-    }
-  } catch (err) {
-    if (req.file) {
-      try { fs.unlinkSync(req.file.path); } catch {}
-    }
-    return res.status(500).json({ error: 'امکان ایجاد پوشه بارگذاری قطعات وجود ندارد.' });
+  if (!fs.existsSync(chunksDir)) {
+    fs.mkdirSync(chunksDir, { recursive: true });
   }
 
   const chunkPath = path.join(chunksDir, `chunk_${chunkIndex}`);

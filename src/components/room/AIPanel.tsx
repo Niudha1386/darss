@@ -1,6 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useStudyRoom } from '../../context/StudyRoomContext';
-import { API_BASE_URL } from '../../services/apiConfig';
 import { formatMathAndMarkdown } from '../../utils/mathRenderer';
 import { CopyButton } from '../ui/CopyButton';
 import {
@@ -337,7 +336,7 @@ export const AIPanel: React.FC = () => {
                           <button
                             type="button"
                             onClick={() => {
-                              fetch(`${API_BASE_URL}/api/rooms/${item.roomId}/pamphlets/${item.id}/resume`, { method: 'POST' }).catch(() => {});
+                              fetch(`/api/rooms/${item.roomId}/pamphlets/${item.id}/resume`, { method: 'POST' }).catch(() => {});
                             }}
                             className="px-1.5 py-0.5 rounded-md bg-rose-50 dark:bg-rose-950/40 hover:bg-rose-100 dark:hover:bg-rose-900 border border-rose-200/50 text-[9px] font-bold cursor-pointer transition-colors"
                           >
